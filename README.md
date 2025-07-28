@@ -1,1 +1,1 @@
-# grad_stats
+Statistics assignments from bioinformatics classes
