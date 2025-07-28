@@ -1,0 +1,544 @@
+---
+title: "HW2"
+author: "Ruben Lancaster"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r load libraries, include=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(ggplot2)
+library(MASS)
+library(discrim)
+library(klaR)
+library(knitr)
+library(bestNormalize)
+library(patchwork)
+library(kableExtra)
+select = dplyr::select
+```
+
+## Software used
+
+R 4.3.1 was used for all computations. The following packages were used:
+
+| Package | Use 
+|---------|-----|
+| tidyverse | tidy data processing | 
+| tidymodels | tidy modeling and machine learning |
+| ggplot2 | data visualization |
+| patchwork | data visualization | 
+| kableExtra | data presentation | 
+| knitr | knitting hmtl |
+| discrim | extension package for fitting tidymodels |
+| MASS | LDA and QDA model engine |
+| klaR | Naive Bayes model engine | 
+| bestNormalize | finding best normalization method | 
+
+## Assignment  
+
+1. Conduct some exploratory data analysis (visualization or numeric summaries) on the
+variables above and how they relate or don’t relate to crime rate (crime_cat)
+  
+2. Researchers want to know if the category of crime rate (crime_cat) can be predicted
+from the data collected and quantifying how well they would be able to expect their
+model to work on new observations (i.e. you should use cross-validation). Lastly, they want to know what accuracy they can expect your chosen model to have on new observations and want a final model fitted on all of the data.
+
+## 1. Exploratory data analysis
+
+The data are observational data from Boston, MA suburbs. The response variable is crime_cat (which has three categories of Low, Medium, or High) and the predictor variables are the other 9 numeric variables. There are a total of 506 observations, with observations of crime rate fairly evenly spread between them. 
+
+```{r data ingest, include = FALSE}
+set.seed(100)
+boston = read_csv("boston_project1.csv")
+```
+
+```{r preprocessing, include = FALSE}
+dim(boston)
+
+# check for NAs. These models can't have missing data. #
+table(is.na(boston))
+
+# Reorder factor levels for crime category #
+boston$crime_cat = factor(boston$crime_cat, levels = c("Low", "Medium", "High"))
+head(boston)
+
+# check that all variables in the dataset are numeric except for the one response variable, which is categorical. 
+lapply(colnames(boston), function(x) {class(boston[[x]])}) %>% unlist()
+```
+
+```{r}
+boston %>% count(crime_cat) %>% kbl() %>% 
+  kable_classic(full_width = F) 
+```
+  
+Descriptions of the variables are below: 
+
+```{r}
+descs = c("crime rate category (low, medium, and high)", "proportion of non-business retail acres per town", "nitrogen oxides concentration (parts per 10 million", "average number of rooms per dwelling", "proportion of owner-occupied units built prior to the 1940s", "weighted mean of distances to Boston employment centers", "full-value property-tax rate per $10,000", "lower status of the population (percent)", "median value of owner-occupied homes in the $1000s")
+variables = c("crime_cat", "indus", "nox", "rm", "age", "dis", "tax", "lstat", "medv")
+df = data.frame(variables, descs)
+colnames(df) = c("Variable", "Description")
+df %>% 
+  kbl() %>% 
+  kable_classic(full_width = F) 
+```
+
+
+
+Relationships between each variable are illustrated below with a pairs plot. If we were to see a cloud of points with no pattern of color visible, it would suggest that variable may have a weak relationship with crime rate. Fortunately, we can see that each variable has some relationship occurring with crime rate, suggesting they may all be useful variables to include in the model. High crime rate separates out more clearly than medium or low. (We will see this reflected later in our ROC curves.)
+
+```{r pairs, fig.width = 12, fig.height = 10}
+
+# define colors
+my_colors <- c("#F8766D", "#00BA38", "#619CFF")
+
+# plot call and create legend
+pairs(boston[1:9], col = my_colors[boston$crime_cat], oma=c(3,3,3,18)) 
+par(xpd = TRUE)
+legend("topright", title = "Crime Rate", fill = my_colors, legend = c(levels(boston$crime_cat)))
+
+```
+  
+We can also look at how the values of each variable are distributed across the three crime rates.  
+
+```{r}
+boston %>% 
+  gather(key = "variable",
+         value = "value", 
+         -crime_cat) %>% 
+  ggplot(aes(x = crime_cat, y = value, color = crime_cat)) +
+  geom_violin(show.legend = FALSE) +
+  facet_wrap(~variable, scales = "free")
+
+```
+  
+We can summarize the general trends gained from visualization with a violin plot in the table below. These trends are not statistically supported, just very general visual observations. 
+
+```{r}
+variable = c("age", "dis", "indus", "lstat", "medv", "nox", "ptratio", "rm", "tax")
+direction = c("positive", "negative", "positive", "positive", "negative", "positive", "positive", "negative", "positive")
+df = data.frame(variable, direction)
+colnames(df) = c("Variable", "Relationship")
+df %>% 
+  kbl() %>% 
+  kable_classic(full_width = F) 
+```
+  
+## 2. Predicting crime rate from the observational data using modeling
+
+I will be using three different models (LDA, QDA, and Naive Bayes) to see if crime rate can be predicted from observational data. 
+
+One of the assumptions of LDA and QDA models is that predictor variables follow a Normal distribution. The distributions are shown below. 
+
+```{r message=FALSE}
+boston %>% 
+  pivot_longer(
+    1:9,
+    names_to = "variable",
+    values_to = "value" 
+  ) %>% ggplot(aes(x = value)) +
+  geom_histogram() +
+  facet_wrap(~variable, scales = "free")+
+  ggtitle("Predictor variables")+
+  theme_bw()
+```
+    
+Many of these variables look like they do not follow a normal distribution. Age, dis, lstat, and nox may need transformation before being used to fit a model. Tax, ptratio, and indus look like they may need transformation as well. Here is a more detailed breakdown of each variable by crime rate response.
+
+```{r, fig.height = 20, fig.width = 10, message = FALSE, warning = FALSE}
+boston %>%
+  pivot_longer(
+    1:9,
+    names_to = "variable",
+    values_to = "value"
+  ) %>% ggplot(aes(x = value)) +
+  geom_histogram() +
+  facet_wrap(variable ~ crime_cat, scales = "free", ncol = 3)+
+  theme_bw()
+```
+  
+Q-Q plots can provide more insight where it is not visually apparent which data are more or less Normal.   
+  
+```{r qqplots, fig.height = 10, fig.width = 10}
+
+qq_data = boston %>% 
+  select(-crime_cat) %>% 
+  pivot_longer(cols = everything(),
+               names_to = "variable",
+               values_to = "value")
+                       
+
+ggplot(qq_data, aes(sample = value)) +
+  geom_qq() +
+  facet_wrap(~variable, scales = "free") +
+  stat_qq_line(color = "red", linetype = "dashed") +
+  labs(title = "Normal Q-Q plots by variable (raw data)") +
+  theme_bw()
+```
+
+Between the histogram and Q-Q plot visualizations, it is obvious that none of the distributions are even close to Normal besides maybe ptratio. The best normalization methods for each variable were found using bestNormalize. The following transformations were found as the ideal method for normalizing each variable:
+
+```{r best normalizations, include = FALSE}
+bestNormalize(boston$age)
+bestNormalize(boston$dis)
+bestNormalize(boston$indus)
+bestNormalize(boston$lstat)
+bestNormalize(boston$medv)
+bestNormalize(boston$nox)
+bestNormalize(boston$ptratio)
+bestNormalize(boston$rm)
+bestNormalize(boston$tax)
+```
+
+```{r}
+vars = c("age", "dis", "indus", "lstat", "medv", "nox", "ptratio", "rm", "tax")
+norms = c("Ordered Quantile (ORQ) normalization", "Ordered Quantile (ORQ) normalization", "Ordered Quantile (ORQ) normalization", "Standardized Box Cox", "Ordered Quantile (ORQ) normalization", "Ordered Quantile (ORQ) normalization", "Ordered Quantile (ORQ) normalization", "Ordered Quantile (ORQ) normalization", "Ordered Quantile (ORQ) normalization")
+df = data.frame(vars, norms)
+colnames(df) = c("Variable", "Transformation")
+df %>% 
+  kbl() %>% 
+  kable_classic(full_width = F) 
+```
+
+```{r variable transformation, include = FALSE}
+boston_tx = boston %>% 
+  mutate(lstat = boxcox(lstat)$x.t) %>% 
+  mutate(dis = orderNorm(dis)$x.t) %>%
+  mutate(age = orderNorm(age)$x.t) %>% 
+  mutate(indus = orderNorm(indus)$x.t) %>%
+  mutate(medv = orderNorm(medv)$x.t) %>% 
+  mutate(nox = orderNorm(nox)$x.t) %>%
+  mutate(ptratio = orderNorm(ptratio)$x.t) %>%
+  mutate(rm = orderNorm(rm)$x.t) %>%
+  mutate(tax = orderNorm(tax)$x.t)
+
+boston_ptx = boston %>% 
+  mutate(lstat = boxcox(lstat)$x.t) %>% 
+  mutate(dis = orderNorm(dis)$x.t) %>%
+  mutate(age = orderNorm(age)$x.t)
+```
+
+Ordernorm is a rank-based transformation function that virtually guaruntees a Normal distribution. After transformation, the data do appear to have Normal distributions. 
+
+```{r message=FALSE, fig.height = 20, fig.width = 8}
+library(patchwork)
+
+p1 = boston %>% 
+  pivot_longer(1:9) %>% 
+  ggplot(aes(x=value)) + 
+  geom_histogram() +
+  facet_wrap(~name, scales = "free", ncol = 1) +
+  ggtitle("Raw data")
+
+p2 = boston_tx %>% 
+  pivot_longer(1:9) %>% 
+  ggplot(aes(x=value)) + 
+  geom_histogram() +
+  facet_wrap(~name, scales = "free", ncol = 1) +
+  ggtitle("Transformed data")
+
+p1 + p2
+```
+
+```{r qqplot of transformed data, fig.height = 10, fig.width = 10}
+qq_data = boston_tx %>% 
+  select(-crime_cat) %>% 
+  pivot_longer(cols = everything(),
+               names_to = "variable",
+               values_to = "value")
+                       
+
+ggplot(qq_data, aes(sample = value)) +
+  geom_qq() +
+  facet_wrap(~variable, scales = "free") +
+  stat_qq_line(color = "red", linetype = "dashed") +
+  labs(title = "Normal Q-Q plots by variable (transformed data)") +
+  theme_bw()
+```
+  
+Unfortunately, this kind of transformation leads to a loss of interpretability. Since the point of this analysis was to produce a predictive model, I am fine favoring slightly better performance at the cost of interpretability.
+
+To see how transformation affects model performance, I created 3 datasets: one with no transformation, one with partial transformation, and one with all variables transformed. All transformations used were informed by the bestNormalize function and stated in the table previously. For the partial transformation I picked variables with the most obvious departures from Normality determined visually by histogram. These are age, dis, and lstat.
+
+A summary of how transformation affects model performance is included later during model performance comparisons.  
+
+### Training and testing models
+
+```{r testing and training split, include = FALSE}
+# Put 3/4 of the data into the training set and 1/4 into a testing set
+set.seed(100)
+boston_split = initial_split(boston_ptx, prop = 3/4, strata = crime_cat)
+train_data = training(boston_split)
+test_data = testing(boston_split)
+
+
+# further split data into folds for cross-validation
+boston_folds = vfold_cv(train_data, v = 10, strata = crime_cat)
+boston_folds
+```
+
+For splitting training and testing data, I've decided to use the default 3/4 split. 3/4 of the data are the training dataset and the other 1/4 are separated into the testing dataset, where it will not be touched until testing the final model to see how it performs on new observations. Our available training data is now n = `r length(train_data$crime_cat)`, and the testing data is n = `r length(test_data$crime_cat)`. 
+
+I have also used a 10-fold cross-validation. I chose 10-fold to maximize k while also having a test set of at least n = 30. 
+
+A summary of accuracy, a metric of performance calculated by (true pos + true neg) / (all pos + all neg), is listed in the table below. Each row is a different model (LDA, QDA, or Naive Bayes), and each column is one of the data frames with either no transformation (none), some data transformed (partial), or all variables transformed (all). 
+
+```{r set up model specifications}
+lda_specs = discrim_linear(engine = "MASS")
+qda_specs = discrim_quad(engine = "MASS")
+nb_specs = naive_Bayes(engine = "klaR")
+```
+
+```{r set up workflow with preprocessor}
+boston_wflow = 
+  workflow() %>% 
+  add_formula(crime_cat ~ .)
+```
+
+```{r fit models, include = FALSE}
+set.seed(100)
+lda_results = 
+  boston_wflow %>% 
+  add_model(lda_specs) %>% 
+  fit_resamples(resamples = boston_folds,
+                control = control_resamples(save_pred = TRUE, verbose = TRUE))
+
+qda_results = 
+  boston_wflow %>% 
+  add_model(qda_specs) %>% 
+  fit_resamples(resamples = boston_folds,
+                control = control_resamples(save_pred = TRUE, verbose = TRUE))
+
+nb_results = 
+  boston_wflow %>% 
+  add_model(nb_specs) %>% 
+  fit_resamples(resamples = boston_folds,
+                control = control_resamples(save_pred = TRUE, verbose = TRUE))
+
+```
+
+```{r evaluate: metrics}
+bptx_lda_metrics = collect_metrics(lda_results)
+bptx_qda_metrics = collect_metrics(qda_results)
+bptx_nb_metrics = collect_metrics(nb_results)
+```
+
+```{r model comparison: no normalization, include = FALSE}
+set.seed(100)
+boston_split = initial_split(boston, prop = 3/4, strata = crime_cat)
+train_data = training(boston_split)
+test_data = testing(boston_split)
+boston_folds = vfold_cv(train_data, v = 10, strata = crime_cat)
+lda_results = 
+  boston_wflow %>% 
+  add_model(lda_specs) %>% 
+  fit_resamples(resamples = boston_folds,
+                control = control_resamples(save_pred = TRUE, verbose = TRUE))
+
+qda_results = 
+  boston_wflow %>% 
+  add_model(qda_specs) %>% 
+  fit_resamples(resamples = boston_folds,
+                control = control_resamples(save_pred = TRUE, verbose = TRUE))
+
+nb_results = 
+  boston_wflow %>% 
+  add_model(nb_specs) %>% 
+  fit_resamples(resamples = boston_folds,
+                control = control_resamples(save_pred = TRUE, verbose = TRUE))
+
+
+braw_lda_metrics = collect_metrics(lda_results)
+braw_qda_metrics = collect_metrics(qda_results)
+braw_nb_metrics = collect_metrics(nb_results)
+```
+
+```{r model comparison: all normalized, include = FALSE}
+set.seed(100)
+boston_split = initial_split(boston_tx, prop = 3/4, strata = crime_cat)
+train_data = training(boston_split)
+test_data = testing(boston_split)
+boston_folds = vfold_cv(train_data, v = 10, strata = crime_cat)
+lda_results = 
+  boston_wflow %>% 
+  add_model(lda_specs) %>% 
+  fit_resamples(resamples = boston_folds,
+                control = control_resamples(save_pred = TRUE, verbose = TRUE))
+
+qda_results = 
+  boston_wflow %>% 
+  add_model(qda_specs) %>% 
+  fit_resamples(resamples = boston_folds,
+                control = control_resamples(save_pred = TRUE, verbose = TRUE))
+
+nb_results = 
+  boston_wflow %>% 
+  add_model(nb_specs) %>% 
+  fit_resamples(resamples = boston_folds,
+                control = control_resamples(save_pred = TRUE, verbose = TRUE))
+
+
+btx_lda_metrics = collect_metrics(lda_results)
+btx_qda_metrics = collect_metrics(qda_results)
+btx_nb_metrics = collect_metrics(nb_results)
+```
+
+```{r create df to display ACC metrics in kable}
+none = round(as.numeric(braw_lda_metrics[1,3]),3)
+partial = round(as.numeric(bptx_lda_metrics[1,3]),3)   
+all = round(as.numeric(btx_lda_metrics[1,3]),3)
+ldas = data.frame(none, partial, all)
+rownames(ldas) = "LDA mean accuracy"
+
+none = round(as.numeric(braw_qda_metrics[1,3]),3)
+partial = round(as.numeric(bptx_qda_metrics[1,3]),3)   
+all = round(as.numeric(btx_qda_metrics[1,3]),3)
+qdas = data.frame(none, partial, all)
+rownames(qdas) = "QDA mean accuracy"
+
+none = round(as.numeric(braw_nb_metrics[1,3]),3)
+partial = round(as.numeric(bptx_nb_metrics[1,3]),3)   
+all = round(as.numeric(btx_nb_metrics[1,3]),3)
+nbs = data.frame(none, partial, all)
+rownames(nbs) = "Naive Bayes mean accuracy"
+
+df = rbind(ldas, qdas, nbs)
+
+df %>%
+  kbl(caption = "Transformation effects on mean accuracy for each model") %>% 
+  kable_classic(full_width = F)
+```
+  
+  
+The highest accuracy was achieved using the dataset where all the variables were transformed (although the difference is negligible). This is interesting because there is no assumption that predictors follow multivariate Normal distribution for Naive Bayes models. I believe this shows that for this specific dataset, the assumptions of Normality did not have to be met for the models to work effectively. For the rest of the performance evaluations, I'll use the dataset with all the variables normalized just because it performed the best.   
+  
+I assessed the mean accuracy and ROC area under curve (AUC) for each model. QDA has the highest accuracy, but Naive Bayes has the largest ROC-AUC. 
+
+```{r create df to display ROC and ACC in kable}
+accuracy = paste(round(as.numeric(btx_lda_metrics[1,3]),3), "±", round(as.numeric(btx_lda_metrics[1,5]),3))
+roc_auc = paste(round(as.numeric(btx_lda_metrics[2,3]),3), "±",  round(as.numeric(btx_lda_metrics[2,5]),3))   
+ldas = data.frame(accuracy, roc_auc)
+rownames(ldas) = "LDA"
+
+accuracy = paste(round(as.numeric(btx_qda_metrics[1,3]),3), "±", round(as.numeric(btx_qda_metrics[1,5]),3))
+roc_auc = paste(round(as.numeric(btx_qda_metrics[2,3]),3), "±",  round(as.numeric(btx_qda_metrics[2,5]),3))  
+qdas = data.frame(accuracy, roc_auc)
+rownames(qdas) = "QDA"
+
+accuracy = paste(round(as.numeric(btx_nb_metrics[1,3]),3), "±", round(as.numeric(btx_nb_metrics[1,5]),3))
+roc_auc = paste(round(as.numeric(btx_nb_metrics[2,3]),3), "±",  round(as.numeric(btx_nb_metrics[2,5]),3))
+nbs = data.frame(accuracy, roc_auc)
+rownames(nbs) = "Naive Bayes"
+
+df = rbind(ldas, qdas, nbs)
+
+df %>%
+  kbl(caption = "Mean accuracy and ROC-AUC for each model") %>% 
+  kable_classic(full_width = F)
+```
+
+I plotted the ROC curve to visually represent how well each model performed predictions. 
+
+
+```{r evaluate: roc curves}
+# bind model dataframes including predictions vs truths into one dataframe # 
+lda_preds = lda_results %>% collect_predictions() %>% mutate(model = "LDA")
+qda_preds = qda_results %>% collect_predictions() %>% mutate(model = "QDA")
+nb_preds = nb_results %>% collect_predictions() %>% mutate(model = "NB")
+pred_df = rbind(lda_preds, qda_preds, nb_preds)
+
+# plot curve, specify truth vs the categorical variable columns #
+pred_df %>% 
+  group_by(model) %>% 
+  roc_curve(truth = crime_cat, .pred_Low:.pred_High) %>% 
+  autoplot()
+  
+```
+
+We can see that LDA performs the least well, and Naive Bayes (NB) and QDA are quite similar. QDA is marginally better at predicting the "high" category, while NB is marginally better at predicting low and medium categories. For my final fit, I will choose to use NB. This means I am choosing a model that does a decent job at predicting each category, rather than one model that predicts one category at a high accuracy while not doing as good of a job predicting the others. (For larger differences in accuracy and ROC-AUC this would matter more, but in reality these models look like they are performing very similarly). 
+
+## Final fit of model on all data  
+
+Having chosen Naive Bayes as the best model, I used my test data to assess how my model performs on new observations. Below is a confidence matrix, which summarizes the number of true or false postives or negatives.   
+
+```{r final fit with best model, message = FALSE}
+set.seed(100)
+
+# using last_fit with a workflow # 
+recipe = recipe(crime_cat ~ ., data = boston_tx)
+
+final_wflow =
+  workflow() %>% 
+  add_recipe(recipe) %>% 
+  add_model(nb_specs)
+
+final_fit = last_fit(final_wflow, split = boston_split)
+
+# Get final predictions
+final_preds = final_fit[[5]][[1]]
+```
+
+```{r calculate F1 scores}
+confmat = conf_mat(final_preds, truth = crime_cat, estimate = .pred_class)
+autoplot(confmat, type = "heatmap")
+```
+  
+We can see that it called "high" crime rates extremely well, but had more trouble correctly predicting between "low" and "medium."
+  
+A summary of the performance metrics for how the model performs on new data is shown below. 
+  
+
+```{r displaying final metrics in kable} 
+
+# calculate F1 score
+f1 = f_meas(final_preds, truth = crime_cat, estimate = .pred_class)
+f1 = f1 %>% select(-.estimator)
+
+# make final predictions df pretty to display as kable
+df = final_fit$.metrics %>% as.data.frame() %>% select(.metric, .estimate)
+df1 = rbind(df, f1) %>% 
+  rename("metric" = ".metric") %>% 
+  rename("estimate" = ".estimate") %>% 
+  mutate(estimate = round(estimate,3)) 
+
+
+
+df1 %>% as.data.frame() %>% 
+  kbl(caption = "Naive Bayes") %>% 
+  kable_classic(full_width = F)
+```
+  
+
+We can expect the fitted Naive Bayes model to predict classes with `r (df1[1,2])*100`% accuracy when it is used to predict unseen data. The F1 score of the model is `r df1[3,2]`. The ROC-AUC of the fitted Naive Bayes model is `r df1[2,2]`. The ROC curves for the Naive Bayes model per response variable on new data are shown below. 
+
+```{r}
+final_preds %>% 
+  roc_curve(truth = crime_cat, .pred_Low:.pred_High) %>% 
+  autoplot() +
+  ggtitle("ROC curves for Naive Bayes on new data")
+```
+  
+This model performs very well at predicting high crime rates, better than either low or medium. If low and medium crime rates could be combined into one "lower" class, I think a binary classifier of lower crime rate vs higher crime rate would perform more accurately than the current model with 3 classes.
+  
+A final model (final_fit) fitted on all of the data is provided in the .Rmd file.
+
+```{r final model fit}
+final_recipe = recipe(crime_cat ~ ., data = boston_tx)
+
+final_wflow = 
+  workflow() %>% 
+  add_model(nb_specs) %>% 
+  add_recipe(recipe)
+
+final_fit = 
+  final_wflow %>% 
+  fit(boston_tx)
+```
+
+

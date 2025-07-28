@@ -1,0 +1,780 @@
+---
+title: "Data_Project_1"
+author: "Ruben Lancaster"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: html_document
+bibliography: dataproject1.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message = F, warning = F)
+library(tidyverse)
+library(moments)
+library(multcomp)
+library(kableExtra)
+library(dplyr)
+```
+
+### Software Used
+
+R 4.3.1 [@R] was used for all computations. The following packages were used:
+
+| Package | Use | Reference |
+|---------|-----|-----------|
+| moments | model diagnostics |  @moments |
+| multcomp | multiple comparisons tests (ANOVA) | @multcomp |
+| dplyr | general data processing | @dplyr |
+| kableExtra | data presentation | @kable |
+
+```{r data ingest}
+#read data#
+data = read_csv("data_project1.csv")
+
+#make column for pulse pressure#
+data = data %>% mutate(pulsePressure = sysBP - diaBP)
+```
+<br>
+<br>  
+  
+## Study Design Overview
+
+Observational data (health-related measurements and demographics) were collected on study participants at a single time point. After 10 years, researchers followed up with whether the participant had chronic heart disease. There were a total of 1500 study participants, 834 female (55.6%) and 666 male (44%). The mean age at data collection was 49.4 years old, and 59.4 at follow-up. 
+
+Variables included in the analysis are described below: 
+
+```{r study design overview}
+
+variables = c("sysBP", "diaBP", "PulsePressure", "BMI", "glucose", "TenYearCHD", "onBPmeds", "hypertension")
+description = c("systolic blood pressure", "diastolic blood pressure", "pulse pressure (difference in systolic and diastolic blood pressure)", "body mass index", "fasting blood sugar level in mg/dL", "after a ten year follow-up did the patient have chronic heart disease", "is the subject currently on blood pressure medication", "does the subject suffer from prevalent hypertension")
+
+descriptions = data.frame(variables, description)
+colnames(descriptions) = c("Variable", "Description")
+
+descriptions %>% 
+  kbl() %>% 
+  kable_classic(full_width = F) 
+```
+
+
+The treatment considered in this analysis is whether the patient was on blood pressure medication (onBPmeds). The experimental and observational units are the individual patient.  
+
+The explanatory variables are BMI, glucose level, pulse pressure, and hypertension. The response variable is whether the patient had chronic heart disease at the 10 year follow-up. 
+
+This study examines differences in BMI and glucose level, taking into account differences between groups on or off blood pressure medication, and whether patients had chronic heart disease or hypertension. Specifically, we are looking at three questions:  
+
+1.  Is mean pulse pressure different between patients on or off medication?  
+
+2.  Do mean measures of BMI and glucose differ between groups with or without chronic heart disease?  
+
+3.  Does mean BMI differ between groups when combining hypertension and blood pressure medication variables?  
+<br>
+<br>
+  
+## 1. Pulse pressure by medication group: Data overview
+
+```{r data overview}
+
+data %>% group_by(onBPmeds) %>% ggplot(aes(x=pulsePressure, count = pulsePressure)) +
+  geom_histogram()+
+  facet_wrap(~onBPmeds, scales = "free")+
+  xlab("Pulse Pressure") +
+  ggtitle("Pulse pressure distribution by medication status, raw data")
+
+```
+  
+#### Pulse pressure by medication group: model diagnostics
+
+The large difference in sample size may impact some of our analyses, which we should take into account when fitting a model. Sample sizes split by whether the patient is on blood pressure medication are shown below
+<br>
+  
+```{r}
+bpmedsnumbers = count(data, onBPmeds)
+colnames(bpmedsnumbers) = c("Medication status", "Number of patients")
+
+bpmedsnumbers %>% 
+  kbl() %>% 
+  kable_classic(full_width = F)
+```
+<br>
+  
+  Ideally, we will use a parametric model (a t-test) to compare mean pulse pressure between the groups of medicated or unmedicated patients. The assumptions of the t-test are that the data are independent, have equal variance, and follow a normal distribution. If the assumptions fail, we will have to transform the data or examine if we can remove outliers. If transformation does not help, we will have to consider alternatives such as randomization or non-parametric tests.
+
+The means for the two groups are shown below: 
+  
+  
+```{r}
+pulsemeans = data %>% group_by(onBPmeds) %>% summarize(mean(pulsePressure)) %>% as.data.frame()
+colnames(pulsemeans) = c("Medication status", "Mean pulse pressure")
+
+pulsemeans %>% 
+  kbl(align = "r") %>% 
+  kable_classic(full_width = F)
+```
+  
+  
+We will be performing a two-sided t-test to test whether the difference in means is significant.  
+  
+The null hypothesis is that there is no difference in population mean pulse pressure between the medicated and unmedicated groups.   
+$H_0: \mu_y = \mu_n$,  where $y$ is on medication and $n$ is not on medication.  
+  
+The alternative hypothesis is that there is a difference in means.  
+$H_a: \mu_y \neq \mu_n$. where $y$ is on medication and $n$ is not on medication.  
+
+```{r blood pressure medication difference: model diagnostics, fig.show='hide', results='hide', message = FALSE}
+
+#If the mean pulse pressure is different for subjects on blood pressure medication compared to those not on medication, then all future analyses should be broken up for the two medication groups #
+
+pulsemeans = data %>% group_by(onBPmeds) %>% summarize(mean(pulsePressure)) %>% as.data.frame()
+meanpulse_med = pulsemeans[2,2]
+meanpulse_nomed = pulsemeans[1,2]
+
+#Is the difference in means significant?#
+
+#Conduct a 2-sided t-test#
+#H_0 is that there is no difference in means, mean_med = mean_nomed
+#H_a is that there is a difference, mean_med != mean_nomed
+
+#Model diagnostics for the t-test#
+
+#1. Independence 
+#Experimental unit = observational unit (the observed patient)
+#In this case, the assumption of independence is met.? 
+
+#2. Equal variances 
+onmeds = data %>% filter(onBPmeds == "on meds") %>% mutate(Residual = pulsePressure - meanpulse_med)
+nomeds = data %>% filter(onBPmeds == "no meds") %>% mutate(Residual = pulsePressure - meanpulse_nomed)
+data = rbind(nomeds, onmeds)
+
+ggplot(data, aes(x = onBPmeds, y = abs(Residual))) +
+  geom_boxplot()+
+  ggtitle("Equal variances assumption")+
+  xlab("Groups")
+
+#3. Normality
+ggplot(data = data, aes(sample = Residual))+
+  stat_qq()+
+  stat_qq_line()
+
+ggplot(data = data, aes(x = Residual, count = Residual))+
+  geom_histogram()+
+  ggtitle("Pulse pressure residual of all participants")
+
+shapiro.test(data$pulsePressure)
+
+skewness(data$Residual)
+kurtosis(data$Residual)
+
+#violates assumption of normality but t-test is robust to this so we can proceed even though the data are not normally distributed. 
+
+#when the assumption of normality is violated, it can be problematic if distributions are different for each treatment. try plotting hists to see:
+
+ggplot(data = nomeds, aes(x = Residual, count = Residual))+
+  geom_histogram()+
+  ggtitle("No Meds, n = 1460")
+
+ggplot(data = onmeds, aes(x = Residual, count = Residual))+
+  geom_histogram()+
+  ggtitle("On Meds, n = 40")
+
+#The distributions are indeed different and have a large difference in sample sizes so we should proceed with caution.
+
+data = data %>% dplyr::select(-Residual)
+```
+
+#### Pulse pressure: Assumption of independence  
+The assumption of independence is met, since the observational unit is the same as the experimental unit (the individual patient). 
+
+For the following diagnostic tests, we will examine residuals as an approximation of errors. 
+
+#### Pulse pressure: Assumption of equal variances 
+
+We will test the assumption of equal variances using graphical diagnosis. We plot the variance of the residuals to look at whether the assumption of equal variance is met. The spread of the box plots should be approximately equal. We will use the absolute value of the residuals for ease of interpretation. 
+
+```{r}
+#2. Equal variances 
+onmeds = data %>% filter(onBPmeds == "on meds") %>% mutate(Residual = pulsePressure - meanpulse_med)
+nomeds = data %>% filter(onBPmeds == "no meds") %>% mutate(Residual = pulsePressure - meanpulse_nomed)
+data = rbind(nomeds, onmeds)
+
+ggplot(data, aes(x = onBPmeds, y = abs(Residual))) +
+  geom_boxplot()+
+  ggtitle("Equal variances assumption: pulse pressure")+
+  xlab("Groups")+
+  ylab("Absolute value of the Residual")
+```
+  
+The variance of one group is less than four times that of the other group, so we can be relatively sure that the assumption is met. However, we should proceed with some caution since the observed type 1 error rate (chances of false discovery) can be higher than predicted when one group has a much larger sample size than the other.
+
+#### Pulse pressure: Assumption of normality 
+
+We will use graphical diagnosis and skewness and kurtosis measures to test the assumption of normality. Below is a histogram of the distribution of residuals for pulse pressure.
+
+```{r}
+ggplot(data = data, aes(x = Residual, count = Residual))+
+  geom_histogram()+
+  ggtitle("Pulse pressure residual of all participants")
+```
+  
+We can see that this is a right-skewed distribution. Skewness and kurtosis measures are around 0 and 3 for a normal distribution, respectively. Below, we can see that skewness and kurtosis measures suggest this is not a normal distribution:  
+  
+  
+```{r}
+skewness = skewness(data$Residual)
+kurtosis= kurtosis(data$Residual)
+
+norm = data.frame(skewness, kurtosis)
+colnames(norm) = c("Skewness", "Kurtosis")
+
+norm %>% 
+  kbl() %>% 
+  kable_classic(full_width = F)
+```
+  
+  
+  
+We confirm with a Q-Q plot, which shows a departure from linearity suggesting it is not a Normal distribution, below.
+
+```{r}
+#3. Normality
+ggplot(data = data, aes(sample = Residual))+
+  stat_qq()+
+  stat_qq_line()+
+  ggtitle("Q-Q plot of Pulse Pressure Residuals")
+```
+  
+When the assumption of normality is violated, it can be problematic if distributions are different for each treatment. We can plot Q-Q plots by treatment (on or off blood pressure medication) to see if this is the case. 
+
+```{r}
+data %>% group_by(onBPmeds) %>% 
+  ggplot(aes(sample = Residual))+
+  stat_qq()+
+  stat_qq_line()+
+  ggtitle("Q-Q plot of Residuals") +
+  facet_wrap(~onBPmeds, scales = "free")
+```
+  
+While it's hard to tell due the difference in sample sizes, it does appear that the distributions are different. While t-tests are relatively robust to departures from Normality, differences in distributions for each sample group are problematic. We will try to remedy this using a log transformation ($log(Y)$) since our data are positive. 
+
+#### Pulse pressure: Log transformation
+
+```{r blood pressure medication difference: log transform, message = FALSE, results = 'hide', fig.show='hide'}
+
+data = data %>% mutate(logpulsePressure = log(pulsePressure))
+
+pulsemeans = data %>% group_by(onBPmeds) %>% summarize(mean(logpulsePressure)) %>% as.data.frame()
+meanpulse_med = pulsemeans[2,2]
+meanpulse_nomed = pulsemeans[1,2]
+
+#Rerun diagnostics# 
+#1. Independence 
+#Experimental unit = observational unit (the observed patient)
+#In this case, the assumption of independence is met.? 
+
+#2. Equal variances 
+onmeds = data %>% filter(onBPmeds == "on meds") %>% mutate(Residual = logpulsePressure - meanpulse_med)
+nomeds = data %>% filter(onBPmeds == "no meds") %>% mutate(Residual = logpulsePressure - meanpulse_nomed)
+data = rbind(nomeds, onmeds)
+
+ggplot(data, aes(x = onBPmeds, y = abs(Residual))) +
+  geom_boxplot()+
+  ggtitle("Equal variances assumption")+
+  xlab("Groups")
+
+#3. Normality
+ggplot(data = data, aes(sample = Residual))+
+  stat_qq()+
+  stat_qq_line()
+
+ggplot(data = data, aes(x = Residual, count = Residual))+
+  geom_histogram()+
+  ggtitle("Pulse pressure residual of all participants")
+```
+
+Pulse pressure data were log transformed.
+The Q-Q plot below shows data after log-transformation, which now follows a linear pattern, suggesting a Normal distribution. 
+
+```{r}
+ggplot(data = data, aes(sample = Residual))+
+  stat_qq()+
+  stat_qq_line()+
+  ggtitle("Q-Q plot of log(pulsePressure)")
+```
+  
+Skewness and kurtosis measures are now more closely aligned with what we expect from a Normal distribution. 
+
+```{r}
+skewness = skewness(data$Residual)
+kurtosis= kurtosis(data$Residual)
+
+norm = data.frame(skewness, kurtosis)
+
+colnames(norm) = c("Skewness", "Kurtosis")
+
+norm %>% 
+  kbl() %>% 
+  kable_classic(full_width = FALSE)
+```
+  
+Again, we can compare distributions by group using Q-Q plots to see if log transformation has remedied the issue of unequal distributions:
+
+```{r}
+data %>% group_by(onBPmeds) %>% 
+  ggplot(aes(sample = Residual))+
+  stat_qq()+
+  stat_qq_line()+
+  ggtitle("Q-Q plot of Residuals (Log transformed)") +
+  facet_wrap(~onBPmeds, scales = "free")
+```
+  
+Based on a graphical analysis, log transformation has successfully remedied the issue of uneven distributions between the two sample groups of on and off blood pressure medication.
+
+
+```{r}
+data = data %>% dplyr::select(-Residual)
+```
+
+
+#### Pulse pressure by medication group: comparative test
+
+We will perform a two-sided t-test using the log-transformed pulse pressure values to determine if there is a difference in pulse pressure population means between the group on medication and the group not on medication. Because we have such unequal sample sizes, we will use the Welch two-sample t-test, which performs better with unequal sample sizes than the Student's t-test [@welch]. 
+
+```{r blood pressure medication difference: comparative test, results = 'hide', message=FALSE}
+#If the mean pulse pressure is different for subjects on blood pressure medication compared to those not on medication, then all future analyses should be broken up for the two medication groups#
+
+t.test(x = nomeds$logpulsePressure, y = onmeds$logpulsePressure, alternative = "two.sided")
+
+#using the t-test we can conclude that there is a statistically significant difference in means between the group on medication and the group without. Future analyses will be broken up into two groups: on medication and not on medication. 
+```
+Using Welch's t-test and $\alpha = 0.05$, the population mean pulse pressure is significantly different between the group on blood pressure medication and the group not on blood pressure medication ($p = 7.14 \times 10^{-11}$). 
+<br><br>
+
+## 2. BMI and glucose, and chronic heart disease (CHD): Data overview
+
+We will now examine whether patients with CHD had a different population mean BMI or population mean glucose level compared to patients without CHD. Based on our previous analysis, patients will be divided into an on-medication group and a no-medication group. Below are the distributions for BMI and glucose, by medication status.
+
+```{r}
+data %>% group_by(onBPmeds) %>% 
+  ggplot(aes(x = BMI, count = BMI)) + 
+  geom_histogram()+
+  ggtitle("Raw data, BMI")+
+  facet_wrap(~onBPmeds, scales = "free")
+```
+```{r}
+data %>% group_by(onBPmeds) %>% 
+  ggplot(aes(x = glucose, count = glucose)) + 
+  geom_histogram()+
+  ggtitle("Raw data, Glucose")+
+  facet_wrap(~onBPmeds, scales = "free")
+```
+
+  
+It looks like there are some issues with non-normally distributed data, which we will address with model diagnostics below.
+
+When comparing these groups, the hypotheses we are testing for both BMI and glucose are: 
+
+No medication:   
+$H_0 : \mu_{yesCHD} = \mu_{noCHD}$  
+$H_a : \mu_{yesCHD} \neq \mu_{noCHD}$  
+  
+On medication:  
+$H_0 : \mu_{yesCHD} = \mu_{noCHD}$  
+$H_a : \mu_{yesCHD} \neq \mu_{noCHD}$  
+  
+We will be performing a total of 4 comparative tests each for BMI and for glucose. Before performing these tests, we will need to conduct more model diagnostics to determine if a t-test is appropriate, if we need to make modifications to remedy the model fit, or if we need to consider alternative approaches.
+
+## BMI, glucose, and CHD: model diagnostics   
+
+The means of the four groups are shown below: 
+
+```{r}
+bmigluc_mean = data %>% group_by(TenYearCHD, onBPmeds) %>% summarize_at(c("BMI", "glucose"), mean, na.rm = TRUE) %>% as.data.frame()
+bmigluc_mean %>% 
+  kbl() %>% 
+  kable_classic(full_width = F)
+```
+<br><br>
+  
+  
+```{r BMI and glucose model diagnostics, results='hide', fig.show='hide', message=FALSE}
+
+# finding residuals # 
+
+yeschd_nomed = data %>% filter(TenYearCHD == "yes", onBPmeds == "no meds") %>% mutate(BMIResidual = BMI - bmigluc_mean[3,3], GlucResidual = glucose - bmigluc_mean[3,4])
+nochd_nomed = data %>% filter(TenYearCHD  == "no", onBPmeds == "no meds") %>% mutate(BMIResidual = BMI - bmigluc_mean[1,3], GlucResidual = glucose - bmigluc_mean[1,4])
+yeschd_med = data %>% filter(TenYearCHD == "yes", onBPmeds == "on meds") %>% mutate(BMIResidual = BMI - bmigluc_mean[4,3], GlucResidual = glucose - bmigluc_mean[4,4])
+nochd_med = data %>% filter(TenYearCHD  == "no", onBPmeds == "on meds") %>% mutate(BMIResidual = BMI - bmigluc_mean[2,3], GlucResidual = glucose - bmigluc_mean[2,4])
+data = rbind(yeschd_nomed, nochd_nomed, yeschd_med, nochd_med)
+```
+
+#### BMI, glucose, and CHD: Assumption of independence
+
+The assumption of independence has been met, because the experimental and observational units are the same (the patient).
+<br><br>
+
+#### BMI, glucose, and CHD: Assumption of equal variance
+
+```{r}
+data %>% group_by(onBPmeds) %>% 
+ggplot(aes(x = TenYearCHD, y = abs(BMIResidual))) +
+  geom_boxplot()+
+  ggtitle("Equal variances assumption: BMI")+
+  ylab("Absolute value of the residual")+
+  facet_wrap(~onBPmeds, scales = "free")
+
+data %>% group_by(onBPmeds) %>% 
+ggplot(aes(x = TenYearCHD, y = abs(GlucResidual))) +
+  geom_boxplot()+
+  ggtitle("Equal variances assumption: Glucose")+
+  ylab("Absolute value of the residual")+
+  facet_wrap(~onBPmeds, scales = "free")
+```
+  
+We can clearly see that there are unequal variances for the group on medication, with more than a 4x difference in spread. The no medication group has equal variances for both glucose and BMI, so a t-test would be appropriate. The on medication group has very large discrepancies in variance so we may need to look into other methods. 
+
+#### BMI, glucose, and CHD: Assumption of Normality
+
+Below are histograms of the distribution of BMI and glucose measures for the four groups. 
+
+```{r}
+data %>% group_by(onBPmeds, TenYearCHD) %>% 
+ggplot(aes(x = GlucResidual, count = GlucResidual)) +
+  geom_histogram()+
+  ggtitle("Normality diagnostics: Glucose")+
+  xlab("Glucose Residual")+
+  facet_wrap(~onBPmeds + TenYearCHD, scales = "free")
+
+data %>% group_by(onBPmeds, TenYearCHD) %>% 
+ggplot(aes(x = BMIResidual, count = BMIResidual)) +
+  geom_histogram()+
+  ggtitle("Normality diagnostics: BMI")+
+  xlab("BMI Residual") +
+  facet_wrap(~onBPmeds + TenYearCHD, scales = "free")
+```
+  
+Because of the discrepancy in sample size between the four groups, it's difficult to tell visually from histograms alone whether the data are Normally distributed. With a graphical assessment using Q-Q plots, we can see a departure from Normality for both glucose and BMI measures.
+
+```{r}
+ggplot(data = data, aes(sample = BMIResidual))+
+  stat_qq()+
+  stat_qq_line()+
+  ggtitle("BMI Residual")
+
+ggplot(data = data, aes(sample = GlucResidual))+
+  stat_qq()+
+  stat_qq_line()+
+  ggtitle("Glucose Residual")
+```
+  
+Measures of skewness and kurtosis also indicate a departure from Normality.
+
+```{r}
+#3. Normality 
+
+na_data = data %>% filter(!is.na(BMI))
+
+bmiskew = skewness(na_data$BMIResidual)
+bmikurtosis = kurtosis(na_data$BMIResidual)
+
+glucskew = skewness(data$GlucResidual)
+gluckurtosis = kurtosis(data$GlucResidual)
+
+Skewness = c(bmiskew, glucskew)
+Kurtosis = c(bmikurtosis, gluckurtosis)
+desc = c("BMI", "Glucose")
+
+ks = data.frame(desc, Skewness, Kurtosis) %>% as.tibble() %>% column_to_rownames(var = "desc")
+
+ks %>% 
+  kbl() %>% 
+  kable_classic(full_width = F)
+```
+  
+Glucose measures severely depart from normality.
+
+```{r}
+data = data %>% dplyr::select(-BMIResidual, -GlucResidual)
+```
+
+#### BMI, glucose, and CHD: Log transformation
+
+Again, we will log transform the data ($log(Y)$) to attempt to remedy both normality and equal variance assumptions. 
+
+
+```{r BMI and glucose: log transform, message = FALSE, fig.show='hide', results='hide'}
+
+data = data %>% mutate(logBMI = log(BMI), logGlucose = log(glucose))
+
+ggplot(data, aes(x = logBMI, count = logBMI)) + 
+  geom_histogram()+
+  ggtitle("all data, log(bmi)")
+ggplot(data, aes(x = logGlucose, count = logGlucose)) + 
+  geom_histogram()+
+  ggtitle("all data, log(glucose)")
+
+# summarizing means #
+
+bmigluc_mean = data %>% group_by(TenYearCHD, onBPmeds) %>% summarize_at(c("logBMI", "logGlucose"), mean, na.rm = TRUE) %>% as.data.frame()
+
+# finding residuals # 
+
+yeschd_nomed = data %>% filter(TenYearCHD == "yes", onBPmeds == "no meds") %>% mutate(BMIResidual = logBMI - bmigluc_mean[3,3], GlucResidual = logGlucose - bmigluc_mean[3,4])
+nochd_nomed = data %>% filter(TenYearCHD  == "no", onBPmeds == "no meds") %>% mutate(BMIResidual = logBMI - bmigluc_mean[1,3], GlucResidual = logGlucose - bmigluc_mean[1,4])
+yeschd_med = data %>% filter(TenYearCHD == "yes", onBPmeds == "on meds") %>% mutate(BMIResidual = logBMI - bmigluc_mean[4,3], GlucResidual = logGlucose - bmigluc_mean[4,4])
+nochd_med = data %>% filter(TenYearCHD  == "no", onBPmeds == "on meds") %>% mutate(BMIResidual = logBMI - bmigluc_mean[2,3], GlucResidual = logGlucose - bmigluc_mean[2,4])
+data = rbind(yeschd_nomed, nochd_nomed, yeschd_med, nochd_med)
+
+# Checking assumptions #
+
+#1. Assume independence 
+```
+  
+Log transformation has not remedied our issue with the equal variance assumption for the on medication group, as shown below.   
+
+```{r}
+#2. Equal variances
+
+data %>% group_by(onBPmeds) %>% 
+ggplot(aes(x = TenYearCHD, y = abs(BMIResidual))) +
+  geom_boxplot()+
+  ggtitle("Equal variances assumption")+
+  ylab("log(BMI Residual)")+
+  facet_wrap(~onBPmeds, scales = "free")
+
+data %>% group_by(onBPmeds) %>% 
+ggplot(aes(x = TenYearCHD, y = abs(GlucResidual))) +
+  geom_boxplot()+
+  ggtitle("Equal variances assumption")+
+  ylab("log(Glucose Residual)")+
+  facet_wrap(~onBPmeds, scales = "free")
+
+#The no medication group has equal variances for both glucose and BMI, so a t-test would be appropriate. The on medication group has very large discrepancies in variance so we may need to look into other methods. 
+```
+  
+Using Q-Q plots for graphical assessment, it is apparent that log transformation has been successful for remedying the BMI distribution, but not the glucose distribution, which still shows a large departure from a linear pattern. 
+
+```{r}
+#3. Normality 
+
+# data %>% group_by(onBPmeds, TenYearCHD) %>% 
+# ggplot(aes(x = GlucResidual, count = GlucResidual)) +
+#   geom_histogram()+
+#   ggtitle("Normality")+
+#   facet_wrap(~onBPmeds + TenYearCHD, scales = "free")
+# 
+# data %>% group_by(onBPmeds, TenYearCHD) %>% 
+# ggplot(aes(x = BMIResidual, count = BMIResidual)) +
+#   geom_histogram()+
+#   ggtitle("Normality")+
+#   facet_wrap(~onBPmeds + TenYearCHD, scales = "free")
+
+ggplot(data = data, aes(sample = BMIResidual))+
+  stat_qq()+
+  stat_qq_line()+
+  ggtitle("Q-Q Plot of BMI Residuals")
+
+ggplot(data = data, aes(sample = GlucResidual))+
+  stat_qq()+
+  stat_qq_line()+
+  ggtitle("Q-Q Plot of Glucose Residuals")
+
+```
+  
+Skewness and kurtosis measures for the log-transformed data support this conclusion, with the BMI residual distribution being close to Normal measures, but the glucose residuals distribution is still very non-normal. 
+  
+```{r}
+na_data = data %>% filter(!is.na(BMI))
+
+bmiskew = skewness(na_data$BMIResidual)
+bmikurtosis = kurtosis(na_data$BMIResidual)
+
+glucskew = skewness(data$GlucResidual)
+gluckurtosis = kurtosis(data$GlucResidual)
+
+Skewness = c(bmiskew, glucskew)
+Kurtosis = c(bmikurtosis, gluckurtosis)
+desc = c("BMI", "Glucose")
+
+ks = data.frame(desc, Skewness, Kurtosis) %>% as.tibble() %>% column_to_rownames(var = "desc")
+
+ks %>% 
+  kbl() %>% 
+  kable_classic(full_width = F)
+```
+
+```{r}
+data = data %>% dplyr::select(-BMIResidual, -GlucResidual)
+```
+
+  
+Because of the issues with equal variance and non-normality for the glucose distribution, I will use a Wilcoxon rank-sum test for glucose comparisons. The Wilcoxon rank-sum test is a non-parametric test that compares differences in distributions, and reports differences in the median statistic instead of the mean. I will use a Welch's t-test for BMI comparisons, which takes into account unequal variance. 
+
+#### BMI comparative tests
+
+```{r BMI comparisons}
+# no meds
+nomeds = data %>% filter(onBPmeds == "no meds")
+yes = nomeds %>% filter(TenYearCHD == "yes")
+no = nomeds %>% filter(TenYearCHD == "no")
+notest = t.test(yes$BMI, no$BMI, alternative = "two.sided")
+
+# yes meds
+onmeds = data %>% filter(onBPmeds == "on meds")
+yes = onmeds %>% filter(TenYearCHD == "yes")
+no = onmeds %>% filter(TenYearCHD == "no")
+# bmi chd ?= bmi no chd
+yestest = t.test(yes$BMI, no$BMI, alternative = "two.sided")
+
+bmiresult = data.frame("P-value", notest$p.value, yestest$p.value) %>% as.tibble() %>% column_to_rownames(var = "X.P.value.")
+```
+
+The p-values for differences in BMI between groups with and without CHD based on medication status are shown in the below table:
+
+```{r}
+colnames(bmiresult) = c("No Medication", "On Medication")
+bmiresult %>% 
+  kbl() %>% 
+  kable_classic(full_width = F)
+```
+
+Using $\alpha = 0.05$, for the group not on medication, we can reject the null hypothesis that mean BMI is the same for the group with CHD and the group without CHD (p < 0.001). However, for the group on medication, we accept the null hypothesis that the mean BMI is the same for both groups (p > 0.05).   
+  
+In conclusion, there is a significant difference in mean BMI between patients with CHD and without CHD *only* when the patients are not taking blood pressure medication. 
+
+#### Glucose comparative tests
+
+```{r glucose comparisons}
+#wilcoxon rank sum
+
+# no meds
+nomeds = data %>% filter(onBPmeds == "no meds")
+yes = nomeds %>% filter(TenYearCHD == "yes")
+no = nomeds %>% filter(TenYearCHD == "no")
+
+notest = wilcox.test(yes$glucose, no$glucose, alternative = c("two.sided"), paired = FALSE, conf.level = 0.95)
+
+# yes meds
+onmeds = data %>% filter(onBPmeds == "on meds")
+yes = onmeds %>% filter(TenYearCHD == "yes")
+no = onmeds %>% filter(TenYearCHD == "no")
+
+yesttest = wilcox.test(yes$glucose, no$glucose, alternative = c("two.sided"), paired = FALSE, conf.level = 0.95)
+
+glucoseresult = data.frame("P-value", notest$p.value, yestest$p.value) %>% as.tibble() %>% column_to_rownames(var = "X.P.value.")
+
+```
+
+The p-values for differences in glucose between groups with and without CHD based on medication status are shown in the below table:
+
+```{r}
+colnames(glucoseresult) = c("No Medication", "On Medication")
+glucoseresult %>% 
+  kbl() %>% 
+  kable_classic(full_width = FALSE)
+```
+With $\alpha$ = 0.05, we accept the null hypothesis regardless of medication status that there is no difference in median glucose measures between groups with or without CHD (p > 0.05). Because we are using the Wilcoxon rank-sum test, we are comparing the median instead of the mean, as this is a more accurate measure of a central tendency of the distribution. 
+
+In summary, there is no significant difference in central glucose measures between groups with or without CHD (p > 0.05). There is a significant difference in BMI between groups with and without CHD *only* when patients are not taking blood pressure medication (p < 0.001). 
+
+
+## 3. Hypertension and medication interactions: Data Overview
+
+We will now look at whether mean BMI is different based on medication and hypertension variables. All patients on medication have hypertension. This results in three groups to compare: on medication with hypertension, no medication with hypertension, and no medication with no hypertension. To conduct this multiple comparison of means, we will use a one-way ANOVA with Tukey's method [@anova] [@tukey]. The assumptions of a one-way ANOVA are similar to the t-test, and we have to check for Normality and equal variance. 
+
+#### Model diagnostics: Normality 
+  
+We will use a graphical analysis using a Q-Q plot.
+
+```{r medication and hypertension: model diagnostics}
+# The researchers are specifically interested in the combination of two variables:
+# onBPmeds and hypertension. NOTE: all patients on medication also had hypertension,
+# so combining the two variables results in three groups: on medication with hypertension, no medication with hypertension, and no medication with no
+# hypertension. Researchers want to know if the mean BMI is different for these three
+# groups. Additionally, they would like to conduct all pairwise tests for the three groups and get confidence intervals for the difference in means for all pairwise mean
+# comparisons.
+
+#make groups: on meds prevalent, no meds prevalent, no meds no 
+
+data_na = data %>% filter(!is.na(BMI))
+
+data_na$Group = paste(data_na$onBPmeds, data_na$hypertension)
+data_na$Group = as.factor(data_na$Group)
+
+hyp_model <- aov(BMI ~ Group -1, data = data_na)
+#Normality assumption
+
+qqnorm(hyp_model$residuals)
+qqline(hyp_model$residuals)
+```
+  
+We can see there is a departure from linearity. If we log-transform the BMI data, we get a much tighter linear relationship: 
+
+```{r}
+#make groups: on meds prevalent, no meds prevalent, no meds no 
+
+hyp_model <- aov(log(BMI) ~ Group -1, data = data_na)
+#Normality assumption
+
+qqnorm(hyp_model$residuals)
+qqline(hyp_model$residuals)
+```
+  
+We can proceed with the log-transformed BMI data. 
+
+#### Model diagnostics: Equal Variance
+
+Below are box plots showing the spread of the residuals. We have a very similar spread between each group, so we can move forward with having met the assumption of equal variance. We can proceed with the one-way ANOVA using Tukey's method. 
+
+```{r}
+
+#Equal variances assumption
+
+data.frame(
+  Group = data_na$Group,
+  Residuals = hyp_model$residuals
+) %>% 
+  ggplot(aes(x = Group, y = abs(Residuals), fill = Group)) +
+  geom_boxplot()
+
+```
+
+#### Hypertension and medication interactions: comparison
+
+First, we confirm there is sufficient evidence to reject the null hypothesis that all population means of BMI are the same using a one-way ANOVA, (p < 0.0001, using an $\alpha = 0.05$). At least one of the groups has a mean BMI that is significantly different from another.
+
+```{r, results='hide', message=FALSE}
+mymodel <- aov(log(BMI) ~ Group-1, data = data_na)
+summary(mymodel)
+```
+
+```{r medication and hypertension: one-way anova, results='hide', message = FALSE}
+summary(glht(hyp_model, linfct = mcp(Group = "Tukey")))
+```
+```{r medication and hypertension: confint, results='hide', message = FALSE}
+confint(glht(hyp_model, linfct = mcp(Group = "Tukey")))
+
+#kable here 
+
+```
+  
+We can now perform Tukey's method. Using Tukey contrasts for a multiple comparison of means and $\alpha = 0.05$, there is a significant difference in mean BMI between the group not on medication with hypertension, and the group not on medication with no hypertension (p=0.0001). We are 95% confident that the true log fold change between the group not on medication with hypertension, and the group not on medication with no hypertension is between 2.24 - 3.27.   
+  
+There is also a significant difference in mean BMI between the group on medication with hypertension, and the group not on medication with no hypertension (p=0.0003). We are 95% confident that the true log fold change between the group on medication with hypertension and the group not on medication with no hypertension is between 0.92 - 3.73.   
+
+There is no significant difference between the group on medication with hypertension and the group not on medication with hypertension (p=0.764). The 95% confidence interval includes 0 log fold change, so we accept the null hypothesis that there is no difference in mean BMI between the two groups. 
+<br><br>
+ 
+# Summary
+
+In summary, we have learned the following:  
+
+1. The population mean pulse pressure is significantly different between the group on blood pressure medication and the group not on blood pressure medication ($p = 7.14 \times 10^{-11}$, Welch's t-test.)  
+
+2. There is no significant difference in central glucose measures between groups with or without CHD (p > 0.05, Wilcoxon Rank-Sum). There is a significant difference in BMI between groups with and without CHD *only* when patients are not taking blood pressure medication (p < 0.001, Welch's t-test). 
+  
+3. There are only significant differences in mean population BMI between groups with or without hypertension, regardless of medication status. There is a significant difference in mean BMI between the group not on medication with hypertension, and the group not on medication with no hypertension (p=0.0001, one-way ANOVA with Tukey's Method.) There is also a significant difference in mean BMI between the group on medication with hypertension, and the group not on medication with no hypertension (p=0.0003, one-way ANOVA with Tukey's Method.) However, there is no significant difference between the group on medication with hypertension and the group not on medication with hypertension (p=0.764, one-way ANOVA with Tukey's Method).
+
+# References
+
+
+
+

@@ -1,0 +1,410 @@
+---
+title: "Heart Miniproject"
+author: "Ruben Lancaster"
+date: "2024-03-04"
+output: 
+  html_document:
+    cache: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r load libraries}
+library(plyr)
+library(tidyverse)
+library(tidymodels)
+library(kableExtra)
+library(GGally)
+
+select = dplyr::select
+```
+
+```{r data ingest}
+heart = read_csv("Heart.csv")
+glimpse(heart)
+# 303 observations of 14 variables. #
+```
+
+## Data Description
+
+The dataset contains information on patients diagnosed with heart disease. There are 303 total patients. 6 patients had missing information and were therefore removed from the dataset, since statistical learning models can't handle missing values (another option would be imputing missing values, but I didn't do that here.)  
+
+Of the 297 remaining patients, 137 were diagnosed with heart disease and 160 did not have a diagnosis of heart disease. 96 of the patients were female, and 201 were male. 
+
+The following table describes the predictor variables. 
+
+| Variable Name	| Description |
+| ------------- | ----------- |
+| Age | Age in years |
+| Sex	| (1) male, (0) = female |
+| ChestPain	| chest pain type (1) typical angina, (2) atypical angina (3) non-anginal pain, (4) asymptomatic (categorical) |
+| RestBP | Resting blood pressure (in mm Hg on admission to the hospital) |
+| Fbs | Fasting blood sugar more than 120 mg/dl? (0) Fasting blood sugar less than 120 mg/dl, (1) fasting blood sugar more than 120 mg/dl |
+| RestECG |	Resting electrocardiographic results: (0) normal, (1) having ST-T wave abnormality, (2) showing probable or definite left ventricular hypertrophy by Estes’ criteria |
+| MaxHR	| Maximum heart rate achieved |
+| ExAng	| Exercise induced angina? | (0) no exercise induced angina, (1) exercise induced angina |
+| Oldpeak	| ST depression induced by exercise relative to rest |
+| Slope	| The slope of the peak exercise ST segment: (1) upsloping, (2) flat, (3) downsloping |
+| Ca | Number of major vessels (0-3) colored by flourosopy |
+| Thal | (3) normal, (6) fixed defect, (7) reversable defect class |
+
+A diagnosis of heart disease was the response variable, or what I am trying to predict.
+
+| Variable Name | Description |
+| ------------- | ----------- |
+| AHD | Diagonosis of heart disease (1 = Yes, 0 = No) |
+
+```{r data quality checks and factorizing}
+# check for na values # 
+table(unique(is.na(heart)))
+
+# there are some missing values in 2 different columns. I'll remove the rows with missing data # 
+heart = heart %>% drop_na()
+
+# this removed 6 rows. 
+
+# assign factor levels to categorical variables and recode factors to numbers # 
+
+# Sex, Female = 0, Male = 1 #
+heart$Sex = factor(heart$Sex, levels = c(0, 1))
+
+# Chest pain, typical = 1, nontypical = 2, nonanginal = 3, asymptomatic = 4 # 
+heart$ChestPain = factor(heart$ChestPain, levels = c("typical", "nontypical", "nonanginal", "asymptomatic"))
+heart$ChestPain = revalue(heart$ChestPain, c(typical = 1, nontypical = 2, nonanginal = 3, asymptomatic = 4))
+# heart$ChestPain = as.numeric(factor(heart$ChestPain, levels = c("typical", "nontypical", "nonanginal", "asymptomatic")))
+
+# Fbs, 0 = Fasting blood sugar less than 120 mg/dl 1 = fasting blood sugar more than 120 mg/dl #
+heart$Fbs = factor(heart$Fbs, levels = c(0, 1))
+# RestECG, (0) normal, (1) having ST-T wave abnormality, (2) showing probable or definite left ventricular hypertrophy by Estes’ criteria # 
+heart$RestECG = factor(heart$RestECG, levels = c(0, 1, 2))
+# ExAng, 0 = no exercise induced angina 1 = exercise induced angina #
+heart$ExAng = factor(heart$ExAng, levels = c(0, 1))
+# Slope, (1) upsloping, (2) flat, (3) downsloping #
+heart$Slope = factor(heart$Slope, levels = c(1, 2, 3))
+# Thal, 3 = normal, 6 = fixed defect, 7 = reversable defect
+heart$Thal = factor(heart$Thal, levels = c("normal", "fixed", "reversable"))
+heart$Thal = revalue(heart$Thal, c(normal = 3, fixed = 6, reversable = 7))
+# AHD, 0 = No, 1 = Yes.
+heart$AHD = factor(heart$AHD, levels = c("No", "Yes"))
+heart$AHD = revalue(heart$AHD, c(No = 0, Yes = 1))
+
+# summarize classes in dataset #
+str(heart)
+table(unique(is.na(heart)))
+```
+
+```{r data exploration ggpairs, fig.width=20, fig.height = 20, include = FALSE, echo = FALSE, message = FALSE, fig.cap= "Correlations between variables visualized with ggpairs."}
+# p1 = ggpairs(heart[1:13], mapping = aes(color = heart$AHD))
+# p1
+# ggsave("pairsheart.png", p1, width = 20, height = 20, units = "in")
+```
+
+Below are density plots for each numeric predictor variable, colored by AHD status. Some variables, like Age, have a more pronounced difference than others, like RestBP. It will be interesting to see if these variables are the ones the elastic net identifies as a variable of greater effect. 
+
+```{r data exploration numeric, message = FALSE, warning = FALSE, include = TRUE, echo = FALSE}
+# https://stackoverflow.com/a/55133909 using !! escape and sym() to call variables in ggplot within for loop # 
+
+heart_numeric = heart %>% select_if(is.numeric)
+numeric_preds = colnames(heart_numeric)
+# pairs(heart_numeric, col = heart$AHD)
+heart_numeric = cbind(heart_numeric, heart$AHD)
+colnames(heart_numeric) = c(numeric_preds, "AHD")
+
+pivot_longer(heart_numeric, cols= 1:6) %>% 
+  ggplot(aes(x = value, fill = AHD)) +
+  geom_density(alpha = 0.7) +
+  facet_wrap(~name, scales = "free")
+
+```
+
+Below are density plots for each categorical predictor variable, colored by AHD status. All of these variables seem to sway one way or another with distribution of AHD status except for Fbs, where the difference between AHD status is minimal.
+
+```{r data exploration categorical, message = FALSE, include = TRUE, echo = FALSE, warning = FALSE}
+
+heart_cat = heart %>% select_if(is.factor)
+
+pivot_longer(heart_cat, cols= 1:7) %>% 
+  ggplot(aes(x = value, fill = AHD)) +
+  geom_bar(alpha = 0.7, position = "dodge") +
+  facet_wrap(~name, scales = "free")
+
+```
+
+Here is a summary of the 7 categorical and 6 numeric predictor variables I am working with:
+
+```{r kable of categorical and numeric predictor variables, include = TRUE, echo = FALSE}
+cats = heart_cat %>% select(-AHD) %>% colnames()
+nums = colnames(heart_numeric)
+cats_df = data.frame(cats, rep("Categorical", length(cats)))
+nums_df = data.frame(nums, rep("Numeric", length(nums)))
+colnames(cats_df) = c("Variable Name", "Variable Type")
+colnames(nums_df) = c("Variable Name", "Variable Type")
+df = rbind(cats_df, nums_df)
+df %>% 
+  kbl() %>% 
+  kable_classic(full_width = F) 
+```
+
+```{r clean environment, warning = FALSE}
+# clean up # 
+rm(df)
+rm(nums_df)
+rm(cats_df)
+rm(heart_numeric)
+rm(numeric_preds)
+rm(heart_cat)
+rm(nums)
+rm(cats)
+rm(column)
+gc()
+```
+
+Since I'm dealing with a mix of categorical and numeric predictor variables and the response is categorical, I chose the following models as options: 
+
+| Model name | Description | Tuning parameters | Engine | 
+| ---------- | ----------- | ----------------- | ------ |
+| logistic_reg | Logistic regression with an elastic net, mixture of LASSO and Ridge Regression | penalty, mixture | glmnet |
+| naive_Bayes | Naive Bayes | smoothness, Laplace | klaR |
+| rand_forest | Random Forest | trees | randomForest |
+| svm_rbf | Support Vector Machine model with radial basis function | cost | kernlab |
+| svm_poly | Support Vector Machine model with polynomial support | cost | kernlab |
+
+
+Data were preprocessed by centering/scaling and adding dummy variables before use with the elastic net and SVM models, which require scaled numeric input. 
+  
+I chose to split my data into 7 folds, resulting in splits of about n = 200 for training and n = 30 for testing at each split.
+
+```{r splitting into testing and training, message = FALSE}
+set.seed(123)
+heart_split = initial_split(heart, prop = 8/10, strata = Sex)
+heart_train = training(heart_split)
+heart_test = testing(heart_split)
+
+set.seed(123)
+# 7-fold cv: 7 is the largest number where I can get 30 samples in the testing split for my folds (splits 203/34 and 204/33) #
+heart_folds = vfold_cv(heart_train, v = 7, strata = Sex, repeats = 2)
+heart_folds
+```
+
+```{r define engines, use default cost grids}
+
+# SVM # 
+svmpoly_spec <- svm_poly(cost = tune(), degree = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("kernlab", scaled = F)
+# svmpoly_grid = grid_regular(parameters(cost(), degree()), levels = 5) 
+
+svmradial_spec <- svm_rbf(cost = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("kernlab", scaled = F)
+# svmradial_grid = grid_regular(parameters(cost()), levels = 5)
+
+# Naive Bayes # 
+# https://parsnip.tidymodels.org//reference/details_naive_Bayes_klaR.html # 
+library(discrim)
+nb_spec = naive_Bayes(smoothness = tune(), Laplace = tune()) %>% 
+  set_engine("klaR")
+# nb_grid = grid_regular(parameters(smoothness(), Laplace()), levels = 5)
+
+# Random forest # 
+# https://parsnip.tidymodels.org//reference/details_rand_forest_ranger.html # 
+forest_spec = rand_forest(trees = tune()) %>% 
+  set_engine("randomForest") %>% 
+  set_mode("classification")
+# rf_grid = grid_regular(parameters(trees()), levels = 5)
+
+# Logistic with tunable elastic net # 
+library(glmnet)
+logmix_spec = logistic_reg(
+  mode = "classification",
+  engine = "glmnet", 
+  mixture = tune(), 
+  penalty = tune())
+# logmix_grid = grid_regular(parameters(mixture(), penalty()), levels = 5)
+```
+
+```{r make recipes}
+
+# Standard recipe for RF and Naive Bayes# 
+recipe_raw = recipe(AHD ~ ., data = heart)
+
+# center and scale for elastic and SVM # 
+recipe_normalized = recipe(AHD ~ ., data = heart) %>% 
+  # normalize numeric data to have a mean of zero
+  step_center(all_numeric_predictors()) %>% 
+  # convert nominal data (e.g. factors) into one or more numeric binary model terms corresponding to the levels of the original data
+  step_dummy(all_factor_predictors())
+
+```
+
+```{r set up workflow sets}
+# workflow with normalizing preprocessing step for SVMs# 
+norm_wf = workflow_set(
+      preproc = list("normalized" = recipe_normalized), 
+      models = list(SVM_radial = svmradial_spec, 
+                    SVM_poly = svmpoly_spec, 
+                    Elastic_logistic = logmix_spec)) #%>%
+  # option_add(id = "normalized_SVM_radial", grid = svmradial_grid) %>%
+  # option_add(id = "normalized_SVM_poly", grid = svmpoly_grid) %>% 
+  # option_add(id = "model_Elastic_logistic", grid = logmix_grid)
+
+wf = workflow_set(
+      preproc = list("model" = recipe_raw), 
+      models = list(Naive_Bayes = nb_spec, 
+                    RandomForest = forest_spec)) # %>% 
+  # option_add(id = "model_Naive_Bayes", grid = nb_grid) %>% 
+  # option_add(id = "model_RandomForest", grid = rf_grid)
+
+# combine into workflows object # 
+workflows = bind_rows(norm_wf, wf)
+workflows
+```
+## Results 
+```{r train models, cache=TRUE, include = TRUE, echo = FALSE}
+doParallel::registerDoParallel()
+set.seed(123)
+heart_results = workflows %>% 
+  workflow_map(
+  resamples = heart_folds,
+  verbose = TRUE,
+  metrics = metric_set(accuracy, sensitivity, specificity, roc_auc)
+)
+
+autoplot(heart_results)
+
+# rank_results(heart_results)
+```
+
+The results of cross-validation are shown above. An SVM polynomial model performs the best, followed closely by elastic logistic models (a mixture between LASSO and ridge regression). SVM rbf models consistently perform the worst, so I will only include SVM poly models from here.   
+Accuracy and ROC_AUC metrics for how these models are expected to perform on unseen data are shown below. The model with the highest accuracy when tested with unseen data is the logistic regression with elastic net mixture. 
+
+```{r extract best performing models}
+
+best_elastic = heart_results %>% 
+  extract_workflow_set_result(id = "normalized_Elastic_logistic") %>% 
+  select_best(metric = "accuracy")
+final_elastic = logistic_reg(penalty = as.numeric(best_elastic[1]), mixture = as.numeric(best_elastic[2]), engine = "glmnet")
+
+best_poly = heart_results %>% 
+  extract_workflow_set_result(id = "normalized_SVM_poly") %>% 
+  select_best(metric = "accuracy")
+final_poly = svm_poly(mode = "classification", cost = as.numeric(best_poly[1]), degree = as.numeric(best_poly[2]), engine = "kernlab")
+
+best_bayes = heart_results %>% 
+  extract_workflow_set_result(id = "model_Naive_Bayes") %>% 
+  select_best(metric = "accuracy")
+final_bayes = naive_Bayes(mode = "classification", smoothness = as.numeric(best_bayes[1]), Laplace = as.numeric(best_bayes[2]), engine = "klaR")
+
+best_forest = heart_results %>% 
+  extract_workflow_set_result(id = "model_RandomForest") %>% 
+  select_best(metric = "accuracy")
+final_forest = rand_forest(mode = "classification", engine = "randomForest", trees = as.numeric(best_forest[1]))
+```
+
+```{r check performances on final fit with test data, include = TRUE, echo = FALSE, warning = FALSE, message = FALSE}
+
+set.seed(123)
+elastic_wf = workflow() %>% add_recipe(recipe_normalized) %>% add_model(final_elastic)
+elastic_fit = last_fit(elastic_wf, split = heart_split, metrics = metric_set(accuracy, roc_auc))
+kb1 = elastic_fit$.metrics %>% as.data.frame() %>% select(.metric, .estimate) %>% mutate(model = "logistic + elastic net")
+
+set.seed(123)
+poly_wf = workflow() %>% add_recipe(recipe_normalized) %>% add_model(final_poly)
+poly_fit = last_fit(poly_wf, split = heart_split, metric = metric_set(accuracy, roc_auc))
+kb2 = poly_fit$.metrics %>% as.data.frame() %>% select(.metric, .estimate) %>% mutate(model = "SVM Poly")
+
+set.seed(123)
+bayes_wf = workflow() %>% add_recipe(recipe_raw) %>% add_model(final_bayes)
+bayes_fit = last_fit(bayes_wf, split = heart_split, metric = metric_set(accuracy, roc_auc))
+kb3 = bayes_fit$.metrics %>% as.data.frame() %>% select(.metric, .estimate) %>% mutate(model = "Naive Bayes")
+
+set.seed(123)
+forest_wf = workflow() %>% add_recipe(recipe_raw) %>% add_model(final_forest)
+forest_fit = last_fit(forest_wf, split = heart_split, metric = metric_set(accuracy, roc_auc))
+kb4 = forest_fit$.metrics %>% as.data.frame() %>% select(.metric, .estimate) %>% mutate(model = "Random Forest")
+
+df = rbind(kb1, kb2, kb3, kb4) %>% select(model, everything())
+colnames(df) = c("Model", "Metric", "Estimate")
+df %>% 
+  group_by(Model) %>% 
+  arrange(Model, Estimate) %>% 
+  kbl() %>% 
+  kable_classic(full_width = FALSE)
+```
+
+The accuracy for the logistic regression with an elastic net mixture model was `r round(df[1,3], 3)`. The predictive ability of a model can be illustrated with a confidence matrix, and four of the models are shown below. 
+
+```{r confidence matrix, messsage = FALSE, include = TRUE, echo = FALSE, fig.cap = "Confidence matrices for four best performing models"}
+library(patchwork)
+p1 = augment(bayes_fit) %>% conf_mat(truth = AHD, estimate = .pred_class) %>% autoplot(type = "heatmap") + ggtitle("Naive Bayes")
+p2 = augment(poly_fit) %>% conf_mat(truth = AHD, estimate = .pred_class) %>% autoplot(type = "heatmap") + ggtitle("SVM poly")
+p3 = augment(elastic_fit) %>% conf_mat(truth = AHD, estimate = .pred_class) %>% autoplot(type = "heatmap") + ggtitle("Logistic regression + elastic net")
+p4 = augment(forest_fit) %>% conf_mat(truth = AHD, estimate = .pred_class) %>% autoplot(type = "heatmap") + ggtitle("Random Forest")
+
+(p1 + p4) / (p2 + p3) +
+plot_annotation(title = "Model performance on unseen data")
+```
+
+ROC curves illustrate the sensitivity and specificity of a model. The larger the area under the curve (AUC), the better specificity and sensitivity a model is able to achieve. The largest ROC AUC value is for the logistic regression with elastic net mixture, at `r round(df[2,3], 3)`. 
+
+```{r ROC curve, include = TRUE, echo = FALSE, fig.cap = "Receiver-Operator Characteristic curves for the four best performing models"}
+bayes = augment(bayes_fit) %>% mutate(Model = "Bayes")
+forest = augment(forest_fit) %>% mutate(Model = "Forest")
+svmpoly = augment(poly_fit) %>% mutate(Model = "SVM_poly")
+elastic = augment(elastic_fit) %>% mutate(Model = "Elastic_log")
+
+preds = bind_rows(bayes, forest, svmpoly, elastic)
+
+preds %>% 
+  group_by(Model) %>% 
+  roc_curve(truth = AHD, .pred_0) %>% 
+  autoplot() +
+  ggtitle("ROC curves for each model on unseen data")
+```
+
+I would recommend this logistic regression with elastic net mixture model out of the five models tested here for predicting new data, with an accuracy of about `r (round(df[1,3], 2))*100`%. 
+  
+Coefficient estimates identified by the elastic model for predictors are shown below. 0 values indicate that the variables are not highly predictive and have been removed from the model. Elastic nets are helpful for reducing the potential of overfitting, which can occur when there are many predictor variables.
+
+```{r variables of greatest predictive effect, include = TRUE, echo = FALSE}
+
+coefs = extract_fit_parsnip(elastic_fit) %>% tidy() %>% select(term, estimate)
+
+coefs %>% kbl() %>% kable_classic(full_width = FALSE)
+
+```
+  
+A summary of the variables and their predictive ability is shown below. Log odds predictive ability for dummy variables is noted as "variable vs reference category (trend)," where trend is the the predictive trend for the variable compared to the reference category. 
+
+| Predictor | Type | Category and/or trend | 
+| --------- | ---- | ----------------- |
+| RestBP | Quantitative | Positive |
+| MaxHR | Quantitative | Negative |
+| Oldpeak | Quantitative | Positive | 
+| Ca | Quantitative | Positive |
+| Sex | Categorical | Male vs female (positive) | 
+| ChestPain | Categorical | Non-anginal pain vs typical angina (negative) and asymptomatic pain vs typical angina (positive) | 
+| ExAng | Categorical | Exercise induced angina vs no exercise induced angina (positive) | 
+| Slope | Categorical | flat vs upsloping (positive) | 
+| Thal | Categorical | Reversable defect class vs normal (positive) |
+
+  
+A patient with an increased risk of heart disease is therefore more likely to be or have:  
+- A higher resting blood pressure than the mean  
+- A lower maximum heart rate than the mean  
+- A higher ST depression induced by exercise relative to rest than the mean  
+- More major vessels colored by flourosopy than the mean  
+- Be male   
+- Have non-anginal or asymptomatic chest pain  
+- Have exercise induced angina   
+- Have a flat slope of the peak exercise ST segment   
+- Have a reversible defect class of Thal.  
+    
+## References   
+
+https://workflowsets.tidymodels.org/articles/tuning-and-comparing-models.html  
+https://www.tmwr.org/workflow-sets  
+https://www.youtube.com/watch?v=5LvTiy9dqrI
+
